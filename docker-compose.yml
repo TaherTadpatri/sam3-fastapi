@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ----------------------------------------------------------------------------
   # SAM 3 Service with GPU Acceleration (Supports GTX 10/16, RTX 20/30/40, etc.)
@@ -11,10 +9,10 @@ services:
     image: sam3-service:latest
     container_name: sam3-server
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    network_mode: "host"
     environment:
       - MODEL_ID=${MODEL_ID:-facebook/sam3}
+      - HF_TOKEN=${HF_TOKEN:-}
       - PRECISION=${PRECISION:-auto}
       - DEVICE=${DEVICE:-auto}
       - ENABLE_WARMUP=${ENABLE_WARMUP:-true}
@@ -53,10 +51,10 @@ services:
     image: sam3-service:latest
     container_name: sam3-server-cpu
     profiles: ["cpu"]
-    ports:
-      - "8000:8000"
+    network_mode: "host"
     environment:
       - MODEL_ID=${MODEL_ID:-facebook/sam3}
+      - HF_TOKEN=${HF_TOKEN:-}
       - PRECISION=fp32
       - DEVICE=cpu
       - ENABLE_WARMUP=false

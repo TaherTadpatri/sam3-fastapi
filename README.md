@@ -171,6 +171,8 @@ The service is fully containerized with **hardware auto-detection** supporting:
 
 ### 1. Run with Docker Compose (Recommended)
 
+> **Note**: `docker-compose.yml` configures `network_mode: "host"` so the container directly uses host network interfaces for seamless model downloads from Hugging Face on initial launch.
+
 **GPU Mode (Any GTX / RTX GPU):**
 ```bash
 docker compose up -d
@@ -200,12 +202,12 @@ docker compose down
 docker build -t sam3-service:latest .
 ```
 
-**Run on GPU (Any GTX / RTX):**
+**Run on GPU (Any GTX / RTX, with host networking for direct internet/HF access):**
 ```bash
 docker run -d \
   --name sam3-server \
   --gpus all \
-  -p 8000:8000 \
+  --network host \
   -v $(pwd)/static:/app/static \
   -v sam3-hf-cache:/root/.cache/huggingface \
   sam3-service:latest
