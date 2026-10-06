@@ -18,10 +18,10 @@ class SegmentJSONRequest(BaseModel):
         description="Bounding box prompts in [x1, y1, x2, y2] format."
     )
     threshold: Optional[float] = Field(
-        0.20, 
+        0.35, 
         ge=0.0, 
         le=1.0, 
-        description="Detection confidence threshold (default: 0.20)."
+        description="Detection confidence threshold (default: 0.35)."
     )
     mask_threshold: Optional[float] = Field(
         0.50, 
@@ -33,6 +33,20 @@ class SegmentJSONRequest(BaseModel):
         "rle", 
         description="Output mask serialization format: 'rle' (recommended for ultra-fast network transfer), 'polygon', 'base64_png', or 'binary_mask'."
     )
+    refine_box_to_mask: bool = Field(
+        True,
+        description="Refine bounding box coordinates to the exact tight pixel boundary of the predicted mask."
+    )
+    box_nms_threshold: Optional[float] = Field(
+        0.50,
+        ge=0.0,
+        le=1.0,
+        description="Non-Maximum Suppression (NMS) IoU threshold to eliminate overlapping duplicate boxes. Set to 1.0 or None to disable."
+    )
+    filter_by_prompt_boxes: bool = Field(
+        True,
+        description="When bounding box prompts are provided, only return the detections matching the prompt boxes."
+    )
     model_override: Optional[Literal["facebook/sam3", "vil-uob/sam3-litetext-s0"]] = Field(
         None,
         description="Optional model override: switch dynamically between 'facebook/sam3' and 'vil-uob/sam3-litetext-s0'."
@@ -43,7 +57,10 @@ class DetectionResult(BaseModel):
     id: int
     score: float
     box: List[float] = Field(..., description="Coordinates [x1, y1, x2, y2]")
+    tight_box: Optional[List[float]] = Field(None, description="Exact pixel-tight bounding box computed from the mask [x1, y1, x2, y2]")
     area: Optional[int] = Field(None, description="Mask area in pixels")
+    iou_with_prompt: Optional[float] = Field(None, description="Intersection-over-Union (IoU) with the user's prompt box")
+    matched_prompt_index: Optional[int] = Field(None, description="Index of the matching input prompt box")
     mask_rle: Optional[Dict[str, Any]] = Field(None, description="COCO-style Run-Length Encoded mask")
     mask_polygons: Optional[List[List[List[float]]]] = Field(
         None, description="Contour polygons: list of [x, y] coordinates"

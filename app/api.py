@@ -35,13 +35,22 @@ async def segment_image_multipart(
         None, description="JSON string of bounding box coordinates: '[[x1, y1, x2, y2], ...]'"
     ),
     threshold: float = Form(
-        0.20, ge=0.0, le=1.0, description="Detection confidence threshold (default: 0.20)."
+        0.35, ge=0.0, le=1.0, description="Detection confidence threshold (default: 0.35)."
     ),
     mask_threshold: float = Form(
         0.50, ge=0.0, le=1.0, description="Mask binarization threshold (default: 0.50)."
     ),
     mask_format: MaskFormatType = Form(
         "rle", description="Mask format: 'rle', 'polygon', 'base64_png', or 'binary_mask'."
+    ),
+    refine_box_to_mask: bool = Form(
+        True, description="Refine bounding box to exact tight boundary of predicted mask."
+    ),
+    box_nms_threshold: Optional[float] = Form(
+        0.50, description="Non-Maximum Suppression (NMS) IoU threshold (default: 0.50)."
+    ),
+    filter_by_prompt_boxes: bool = Form(
+        True, description="When prompt boxes are given, only return prompt-matched detections."
     ),
     model_override: Optional[str] = Form(
         None, description="Optional override model: 'facebook/sam3' or 'vil-uob/sam3-litetext-s0'."
@@ -78,6 +87,9 @@ async def segment_image_multipart(
             threshold=threshold,
             mask_threshold=mask_threshold,
             mask_format=mask_format,
+            refine_box_to_mask=refine_box_to_mask,
+            box_nms_threshold=box_nms_threshold,
+            filter_by_prompt_boxes=filter_by_prompt_boxes,
             model_override=model_override,
         )
         return response
@@ -111,9 +123,12 @@ async def segment_image_json(request: SegmentJSONRequest) -> SegmentResponse:
             image=image,
             prompt_text=request.prompt_text,
             boxes=request.boxes,
-            threshold=request.threshold or 0.20,
+            threshold=request.threshold or 0.35,
             mask_threshold=request.mask_threshold or 0.50,
             mask_format=request.mask_format,
+            refine_box_to_mask=request.refine_box_to_mask,
+            box_nms_threshold=request.box_nms_threshold,
+            filter_by_prompt_boxes=request.filter_by_prompt_boxes,
             model_override=request.model_override,
         )
         return response

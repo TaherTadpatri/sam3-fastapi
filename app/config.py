@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     ENABLE_WARMUP: bool = True
     
     # Inference defaults
-    DEFAULT_SCORE_THRESHOLD: float = 0.20
+    DEFAULT_SCORE_THRESHOLD: float = 0.35
     DEFAULT_MASK_THRESHOLD: float = 0.50
     
     # Server configuration

@@ -79,9 +79,12 @@ def segment_and_save(
     image_path: str,
     prompt_text: Optional[str] = None,
     boxes: Optional[List[List[float]]] = None,
-    threshold: float = 0.20,
+    threshold: float = 0.35,
     mask_threshold: float = 0.50,
     mask_format: str = "rle",
+    refine_box_to_mask: bool = True,
+    box_nms_threshold: float = 0.50,
+    filter_by_prompt_boxes: bool = True,
     server_url: str = "http://localhost:8000",
     output_dir: str = "output",
 ) -> Dict[str, Any]:
@@ -97,6 +100,9 @@ def segment_and_save(
         "threshold": threshold,
         "mask_threshold": mask_threshold,
         "mask_format": mask_format,
+        "refine_box_to_mask": str(refine_box_to_mask).lower(),
+        "box_nms_threshold": str(box_nms_threshold),
+        "filter_by_prompt_boxes": str(filter_by_prompt_boxes).lower(),
     }
     if prompt_text:
         data["prompt_text"] = prompt_text
@@ -104,10 +110,12 @@ def segment_and_save(
         data["boxes"] = json.dumps(boxes)
 
     print(f"\n[+] Sending request to: {url}")
-    print(f"    Image:   {image_path}")
-    print(f"    Prompt:  {prompt_text or '(None)'}")
-    print(f"    Boxes:   {boxes or '(None)'}")
-    print(f"    Format:  {mask_format}")
+    print(f"    Image:        {image_path}")
+    print(f"    Prompt:       {prompt_text or '(None)'}")
+    print(f"    Boxes:        {boxes or '(None)'}")
+    print(f"    Threshold:    {threshold}")
+    print(f"    Refine BBox:  {refine_box_to_mask}")
+    print(f"    NMS:          {box_nms_threshold}")
 
     with open(image_path, "rb") as f:
         files = {"file": (os.path.basename(image_path), f, "image/jpeg")}
