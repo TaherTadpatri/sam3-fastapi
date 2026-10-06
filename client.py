@@ -83,8 +83,10 @@ def segment_and_save(
     mask_threshold: float = 0.50,
     mask_format: str = "rle",
     refine_box_to_mask: bool = True,
+    compute_obb: bool = True,
     box_nms_threshold: float = 0.50,
     filter_by_prompt_boxes: bool = True,
+    box_type: str = "obb",
     server_url: str = "http://localhost:8000",
     output_dir: str = "output",
 ) -> Dict[str, Any]:
@@ -101,6 +103,7 @@ def segment_and_save(
         "mask_threshold": mask_threshold,
         "mask_format": mask_format,
         "refine_box_to_mask": str(refine_box_to_mask).lower(),
+        "compute_obb": str(compute_obb).lower(),
         "box_nms_threshold": str(box_nms_threshold),
         "filter_by_prompt_boxes": str(filter_by_prompt_boxes).lower(),
     }
@@ -115,6 +118,7 @@ def segment_and_save(
     print(f"    Boxes:        {boxes or '(None)'}")
     print(f"    Threshold:    {threshold}")
     print(f"    Refine BBox:  {refine_box_to_mask}")
+    print(f"    Compute OBB:  {compute_obb}")
     print(f"    NMS:          {box_nms_threshold}")
 
     with open(image_path, "rb") as f:
@@ -133,7 +137,7 @@ def segment_and_save(
     print(f"    Detections:     {num_det}")
 
     if num_det == 0:
-        print("[!] No objects detected with threshold =", threshold)
+        print(f"[!] No objects detected with threshold={threshold}. Try lowering threshold (e.g. -t 0.25).")
         return result
 
     # 2. Load Original Image for Overlays & Cutouts
@@ -151,6 +155,7 @@ def segment_and_save(
         det_id = det["id"]
         score = det["score"]
         box = det["box"]
+        obb = det.get("obb")
         color = colors[i]
 
         # Decode binary mask
@@ -167,36 +172,70 @@ def segment_and_save(
         cutout_filename = os.path.join(output_dir, f"cutout_{det_id}.png")
         cv2.imwrite(cutout_filename, cv2.cvtColor(cutout, cv2.COLOR_RGBA2BGRA))
 
-        # C. Blend colored mask onto overlay canvas (alpha = 0.45)
+        # C. Blend colored mask onto overlay canvas (alpha = 0.40)
         color_mask = np.zeros_like(orig_np, dtype=np.float32)
         color_mask[mask_binary == 1] = color
-        alpha = 0.45
+        alpha = 0.40
         mask_indices = mask_binary == 1
         overlay_np[mask_indices] = (
             overlay_np[mask_indices] * (1 - alpha) + color_mask[mask_indices] * alpha
         )
 
-        print(f"    -> Saved mask #{det_id}: score={score:.3f}, box={box} -> {mask_filename}")
+        obb_str = ""
+        if obb:
+            obb_str = f", OBB=[center={obb['center']}, angle={obb['angle']}°]"
+        print(f"    -> Saved mask #{det_id}: score={score:.3f}, box={box}{obb_str} -> {mask_filename}")
 
-    # 3. Draw Bounding Boxes and Labels on Overlay
-    overlay_img = Image.fromarray(np.clip(overlay_np, 0, 255).astype(np.uint8))
+    # 3. Draw Bounding Boxes, Contours, and Labels on Overlay
+    overlay_uint8 = np.clip(overlay_np, 0, 255).astype(np.uint8)
+
+    # Draw crisp contour boundary lines around each mask
+    for i, det in enumerate(detections):
+        color = colors[i]
+        mask_binary = decode_mask_from_detection(det, (h, w))
+        contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay_uint8, contours, -1, color, 2)
+
+    # Draw oriented bounding box (OBB) polygons and center points
+    for i, det in enumerate(detections):
+        color = colors[i]
+        obb = det.get("obb")
+        if obb and box_type in ("obb", "both"):
+            corners = np.array(obb["corners"], dtype=np.int32)
+            cv2.polylines(overlay_uint8, [corners], isClosed=True, color=color, thickness=3)
+            # Center grasp point
+            cx, cy = int(round(obb["center"][0])), int(round(obb["center"][1]))
+            cv2.circle(overlay_uint8, (cx, cy), 6, (0, 255, 0), -1)
+            cv2.circle(overlay_uint8, (cx, cy), 7, (0, 0, 0), 2)
+
+    overlay_img = Image.fromarray(overlay_uint8)
     draw = ImageDraw.Draw(overlay_img)
 
     for i, det in enumerate(detections):
         det_id = det["id"]
         score = det["score"]
         x1, y1, x2, y2 = det["box"]
+        obb = det.get("obb")
         color = colors[i]
 
-        # Draw box
-        draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+        # Draw axis-aligned bounding box (AABB) if requested
+        if box_type in ("aabb", "both"):
+            dash_color = color if box_type == "aabb" else (220, 220, 220)
+            draw.rectangle([x1, y1, x2, y2], outline=dash_color, width=2)
 
-        # Label text
-        label = f"#{det_id} {prompt_text or 'object'}: {score:.2f}"
-        # Label background tag
-        text_bbox = draw.textbbox((x1, max(0, y1 - 18)), label)
+        # Label position and text
+        if obb and box_type in ("obb", "both"):
+            label_x = min(pt[0] for pt in obb["corners"])
+            label_y = min(pt[1] for pt in obb["corners"])
+            label = f"#{det_id} {prompt_text or 'object'}: {score:.2f} ({obb['angle']}°)"
+        else:
+            label_x, label_y = x1, y1
+            label = f"#{det_id} {prompt_text or 'object'}: {score:.2f}"
+
+        label_y = max(0, label_y - 20)
+        text_bbox = draw.textbbox((label_x, label_y), label)
         draw.rectangle([text_bbox[0] - 2, text_bbox[1] - 2, text_bbox[2] + 2, text_bbox[3] + 2], fill=color)
-        draw.text((x1, max(0, y1 - 18)), label, fill=(255, 255, 255))
+        draw.text((label_x, label_y), label, fill=(255, 255, 255))
 
     overlay_path = os.path.join(output_dir, "overlay.png")
     overlay_img.save(overlay_path)
@@ -223,13 +262,17 @@ def main():
     )
     parser.add_argument("--image", "-i", type=str, default=None, help="Path to input image file")
     parser.add_argument(
-        "--prompt", "-p", type=str, default="circle", help="Text concept prompt (e.g. 'cat', 'red circle')"
+        "--prompt", "-p", type=str, default="circle", help="Text concept prompt (e.g. 'cat', 'red box')"
     )
     parser.add_argument(
         "--boxes", "-b", type=str, default=None, help="JSON bounding boxes: '[[x1,y1,x2,y2]]'"
     )
     parser.add_argument(
-        "--threshold", "-t", type=float, default=0.10, help="Confidence threshold (default: 0.10)"
+        "--threshold", "-t", type=float, default=0.35, help="Confidence threshold (default: 0.35)"
+    )
+    parser.add_argument(
+        "--box-type", type=str, default="obb", choices=["obb", "aabb", "both"],
+        help="Bounding box overlay style: 'obb' (snug rotated box), 'aabb' (upright box), or 'both' (default: obb)"
     )
     parser.add_argument(
         "--format", "-f", type=str, default="rle", choices=["rle", "polygon", "base64_png", "binary_mask"],
@@ -257,6 +300,7 @@ def main():
         prompt_text=args.prompt,
         boxes=parsed_boxes,
         threshold=args.threshold,
+        box_type=args.box_type,
         mask_format=args.format,
         server_url=args.server,
         output_dir=args.output,

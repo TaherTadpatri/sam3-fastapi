@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field
 MaskFormatType = Literal["rle", "polygon", "base64_png", "binary_mask"]
 
 
+class OrientedBoundingBox(BaseModel):
+    center: List[float] = Field(..., description="[cx, cy] center coordinates of the oriented bounding box")
+    size: List[float] = Field(..., description="[width, height] dimensions of the rotated box")
+    angle: float = Field(..., description="Rotation angle in degrees (-90 to +90)")
+    corners: List[List[float]] = Field(..., description="4 corner vertices [[x0, y0], [x1, y1], [x2, y2], [x3, y3]]")
+
+
 class SegmentJSONRequest(BaseModel):
     image_base64: str = Field(..., description="Base64 encoded input image (JPEG or PNG).")
     prompt_text: Optional[str] = Field(
@@ -37,10 +44,14 @@ class SegmentJSONRequest(BaseModel):
         True,
         description="Refine bounding box coordinates to the exact tight pixel boundary of the predicted mask."
     )
+    compute_obb: bool = Field(
+        True,
+        description="Compute oriented bounding box (OBB) hugging rotated objects and grasp centers."
+    )
     box_nms_threshold: Optional[float] = Field(
         0.50,
-        ge=0.0,
-        le=1.0,
+        ge=0.0, 
+        le=1.0, 
         description="Non-Maximum Suppression (NMS) IoU threshold to eliminate overlapping duplicate boxes. Set to 1.0 or None to disable."
     )
     filter_by_prompt_boxes: bool = Field(
@@ -58,6 +69,7 @@ class DetectionResult(BaseModel):
     score: float
     box: List[float] = Field(..., description="Coordinates [x1, y1, x2, y2]")
     tight_box: Optional[List[float]] = Field(None, description="Exact pixel-tight bounding box computed from the mask [x1, y1, x2, y2]")
+    obb: Optional[OrientedBoundingBox] = Field(None, description="Oriented Bounding Box (OBB) with rotation angle, snug corners, and center point")
     area: Optional[int] = Field(None, description="Mask area in pixels")
     iou_with_prompt: Optional[float] = Field(None, description="Intersection-over-Union (IoU) with the user's prompt box")
     matched_prompt_index: Optional[int] = Field(None, description="Index of the matching input prompt box")

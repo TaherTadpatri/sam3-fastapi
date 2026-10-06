@@ -46,6 +46,9 @@ async def segment_image_multipart(
     refine_box_to_mask: bool = Form(
         True, description="Refine bounding box to exact tight boundary of predicted mask."
     ),
+    compute_obb: bool = Form(
+        True, description="Compute oriented bounding box (OBB) hugging rotated objects."
+    ),
     box_nms_threshold: Optional[float] = Form(
         0.50, description="Non-Maximum Suppression (NMS) IoU threshold (default: 0.50)."
     ),
@@ -88,6 +91,7 @@ async def segment_image_multipart(
             mask_threshold=mask_threshold,
             mask_format=mask_format,
             refine_box_to_mask=refine_box_to_mask,
+            compute_obb=compute_obb,
             box_nms_threshold=box_nms_threshold,
             filter_by_prompt_boxes=filter_by_prompt_boxes,
             model_override=model_override,
@@ -127,6 +131,7 @@ async def segment_image_json(request: SegmentJSONRequest) -> SegmentResponse:
             mask_threshold=request.mask_threshold or 0.50,
             mask_format=request.mask_format,
             refine_box_to_mask=request.refine_box_to_mask,
+            compute_obb=request.compute_obb,
             box_nms_threshold=request.box_nms_threshold,
             filter_by_prompt_boxes=request.filter_by_prompt_boxes,
             model_override=request.model_override,

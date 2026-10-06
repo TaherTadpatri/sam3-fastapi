@@ -7,11 +7,12 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 import torch
 import numpy as np
+import cv2
 from PIL import Image
 from transformers import Sam3Processor, Sam3Model, Sam3LiteTextModel
 
 from app.config import settings
-from app.schemas import DetectionResult, SegmentResponse
+from app.schemas import DetectionResult, OrientedBoundingBox, SegmentResponse
 from app.utils import format_mask
 
 logger = logging.getLogger("sam3.model_manager")
@@ -165,6 +166,7 @@ class ModelManager:
         mask_threshold: float = 0.50,
         mask_format: str = "rle",
         refine_box_to_mask: bool = True,
+        compute_obb: bool = True,
         box_nms_threshold: Optional[float] = 0.50,
         filter_by_prompt_boxes: bool = True,
         model_override: Optional[str] = None,
@@ -274,6 +276,23 @@ class ModelManager:
                     else:
                         tight_box = box_coords
 
+                    # Compute Oriented Bounding Box (OBB) hugging rotated objects
+                    obb_obj = None
+                    if compute_obb and len(x_indices) > 0:
+                        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if contours:
+                            largest_c = max(contours, key=cv2.contourArea)
+                            if len(largest_c) >= 3:
+                                rect = cv2.minAreaRect(largest_c)
+                                (cx, cy), (bw, bh), angle = rect
+                                box_pts = cv2.boxPoints(rect)
+                                obb_obj = OrientedBoundingBox(
+                                    center=[round(float(cx), 2), round(float(cy), 2)],
+                                    size=[round(float(bw), 2), round(float(bh), 2)],
+                                    angle=round(float(angle), 2),
+                                    corners=[[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in box_pts],
+                                )
+
                     # If box refinement is enabled, use the tight mask boundary
                     final_box = tight_box if refine_box_to_mask else box_coords
                     mask_dict = format_mask(binary_mask, mask_format)
@@ -283,6 +302,7 @@ class ModelManager:
                         "score": round(score_val, 4),
                         "box": final_box,
                         "tight_box": tight_box,
+                        "obb": obb_obj,
                         "area": mask_dict.get("area"),
                         "mask_rle": mask_dict.get("mask_rle"),
                         "mask_polygons": mask_dict.get("mask_polygons"),
@@ -315,6 +335,7 @@ class ModelManager:
                                 score=best_match["score"],
                                 box=best_match["box"],
                                 tight_box=best_match["tight_box"],
+                                obb=best_match["obb"],
                                 area=best_match["area"],
                                 iou_with_prompt=round(best_iou, 4),
                                 matched_prompt_index=p_idx,
@@ -332,6 +353,7 @@ class ModelManager:
                             score=d["score"],
                             box=d["box"],
                             tight_box=d["tight_box"],
+                            obb=d["obb"],
                             area=d["area"],
                             mask_rle=d["mask_rle"],
                             mask_polygons=d["mask_polygons"],
