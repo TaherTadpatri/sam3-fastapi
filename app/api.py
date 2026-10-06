@@ -2,8 +2,9 @@
 
 import json
 import logging
+import torch
 from typing import Optional, List
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Query, status
+from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Query, status, Request
 
 from app.config import settings
 from app.schemas import (
@@ -17,7 +18,7 @@ from app.utils import decode_image_bytes, decode_base64_image
 from app.model_manager import ModelManager
 
 logger = logging.getLogger("sam3.api")
-router = APIRouter(prefix="/v1", tags=["SAM3 Segmentation"])
+router = APIRouter(tags=["SAM3 Segmentation"])
 
 
 @router.post(
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/v1", tags=["SAM3 Segmentation"])
     description="Upload an image file with an optional text concept prompt or bounding boxes.",
 )
 async def segment_image_multipart(
+    request: Request,
     file: UploadFile = File(..., description="Image file (JPEG/PNG/WEBP)."),
     prompt_text: Optional[str] = Form(
         None, description="Text concept prompt (e.g. 'dog', 'sports car', 'person')."
@@ -82,6 +84,7 @@ async def segment_image_multipart(
             )
 
     manager = ModelManager.get_instance()
+    base_url = str(request.base_url).rstrip("/")
     try:
         response = await manager.predict(
             image=image,
@@ -95,6 +98,7 @@ async def segment_image_multipart(
             box_nms_threshold=box_nms_threshold,
             filter_by_prompt_boxes=filter_by_prompt_boxes,
             model_override=model_override,
+            base_url=base_url,
         )
         return response
     except Exception as e:
@@ -111,9 +115,12 @@ async def segment_image_multipart(
     summary="Segment Image via JSON Payload (Base64)",
     description="Send a base64 encoded image with text prompt and parameters in a JSON body.",
 )
-async def segment_image_json(request: SegmentJSONRequest) -> SegmentResponse:
+async def segment_image_json(
+    request: Request,
+    payload: SegmentJSONRequest,
+) -> SegmentResponse:
     try:
-        image = decode_base64_image(request.image_base64)
+        image = decode_base64_image(payload.image_base64)
     except Exception as e:
         logger.error(f"Base64 image decode failed: {e}")
         raise HTTPException(
@@ -122,19 +129,21 @@ async def segment_image_json(request: SegmentJSONRequest) -> SegmentResponse:
         )
 
     manager = ModelManager.get_instance()
+    base_url = str(request.base_url).rstrip("/")
     try:
         response = await manager.predict(
             image=image,
-            prompt_text=request.prompt_text,
-            boxes=request.boxes,
-            threshold=request.threshold or 0.35,
-            mask_threshold=request.mask_threshold or 0.50,
-            mask_format=request.mask_format,
-            refine_box_to_mask=request.refine_box_to_mask,
-            compute_obb=request.compute_obb,
-            box_nms_threshold=request.box_nms_threshold,
-            filter_by_prompt_boxes=request.filter_by_prompt_boxes,
-            model_override=request.model_override,
+            prompt_text=payload.prompt_text,
+            boxes=payload.boxes,
+            threshold=payload.threshold or 0.35,
+            mask_threshold=payload.mask_threshold or 0.50,
+            mask_format=payload.mask_format,
+            refine_box_to_mask=payload.refine_box_to_mask,
+            compute_obb=payload.compute_obb,
+            box_nms_threshold=payload.box_nms_threshold,
+            filter_by_prompt_boxes=payload.filter_by_prompt_boxes,
+            model_override=payload.model_override,
+            base_url=base_url,
         )
         return response
     except Exception as e:
@@ -174,17 +183,21 @@ async def info() -> InfoResponse:
     model, _ = manager.load_model(active_id)
     param_count = sum(p.numel() for p in model.parameters())
 
+    compute_cap = torch.cuda.get_device_capability(0) if manager.device.type == "cuda" else (0, 0)
+    has_tensor_cores = manager.device.type == "cuda" and compute_cap >= (7, 0) and manager.precision in ["fp16", "bf16"]
+
     return InfoResponse(
         model_id=active_id,
-        precision=settings.PRECISION,
+        precision=manager.precision,
         device=str(manager.device),
         num_parameters=param_count,
         supported_models=["facebook/sam3", "vil-uob/sam3-litetext-s0"],
         supported_formats=["rle", "polygon", "base64_png", "binary_mask"],
         cuda_optimizations={
-            "tf32_enabled": settings.ENABLE_TF32,
-            "cudnn_benchmark": settings.ENABLE_CUDNN_BENCHMARK,
-            "tensor_cores_active": manager.device.type == "cuda" and settings.PRECISION in ["fp16", "bf16"],
+            "tf32_enabled": settings.ENABLE_TF32 and compute_cap >= (8, 0),
+            "cudnn_benchmark": settings.ENABLE_CUDNN_BENCHMARK and manager.device.type == "cuda",
+            "tensor_cores_active": has_tensor_cores,
+            "compute_capability": f"{compute_cap[0]}.{compute_cap[1]}" if manager.device.type == "cuda" else "N/A",
         },
     )
 

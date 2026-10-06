@@ -1,8 +1,10 @@
 """High-Performance Singleton Model Manager for SAM 3 with Memory-Safe Quantization."""
 
+import os
 import gc
 import asyncio
 import time
+import uuid
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 import torch
@@ -12,7 +14,7 @@ from PIL import Image
 from transformers import Sam3Processor, Sam3Model, Sam3LiteTextModel
 
 from app.config import settings
-from app.schemas import DetectionResult, OrientedBoundingBox, SegmentResponse
+from app.schemas import DetectionResult, OrientedBoundingBox, SegmentResponse, ResultDetails
 from app.utils import format_mask
 
 logger = logging.getLogger("sam3.model_manager")
@@ -23,22 +25,55 @@ class ModelManager:
     _instance: Optional["ModelManager"] = None
     
     def __init__(self):
-        self.device = torch.device(settings.DEVICE)
-        self.torch_dtype = self._get_torch_dtype(settings.PRECISION)
+        # 1. Resolve Compute Device
+        if settings.DEVICE == "auto" or not settings.DEVICE:
+            device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            device_str = settings.DEVICE
+            if device_str.startswith("cuda") and not torch.cuda.is_available():
+                logger.warning("CUDA requested but not available. Automatically falling back to CPU.")
+                device_str = "cpu"
+        self.device = torch.device(device_str)
+
+        # 2. Resolve Precision based on hardware capability
+        if settings.PRECISION == "auto" or not settings.PRECISION:
+            if self.device.type == "cuda":
+                self.precision = "fp16"
+            else:
+                self.precision = "fp32"
+        else:
+            self.precision = settings.PRECISION
+            if self.device.type == "cpu" and self.precision == "fp16":
+                logger.warning("FP16 is not supported on CPU. Automatically switching to FP32.")
+                self.precision = "fp32"
+
+        self.torch_dtype = self._get_torch_dtype(self.precision)
         self.active_model: Optional[Any] = None
         self.active_processor: Optional[Sam3Processor] = None
         self.active_model_id: Optional[str] = None
         self.lock = asyncio.Lock()
         
-        # Configure PyTorch CUDA runtime acceleration
+        # 3. Configure PyTorch CUDA runtime acceleration per GPU architecture
         if self.device.type == "cuda":
-            if settings.ENABLE_TF32:
+            compute_cap = torch.cuda.get_device_capability(0)
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info("Detected GPU: %s (Compute Capability: %d.%d)", gpu_name, compute_cap[0], compute_cap[1])
+
+            # TF32 is supported on Ampere (sm_80) or newer (e.g. RTX 30/40 series, A100)
+            tf32_supported = compute_cap >= (8, 0)
+            if tf32_supported and settings.ENABLE_TF32:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
+                logger.info("Enabled TF32 for Ampere/Ada/Hopper Tensor Cores.")
+            else:
+                torch.backends.cuda.matmul.allow_tf32 = False
+                torch.backends.cudnn.allow_tf32 = False
+
             if settings.ENABLE_CUDNN_BENCHMARK:
                 torch.backends.cudnn.benchmark = True
-            logger.info("Configured CUDA optimizations: TF32=%s, cuDNN Benchmark=%s", 
-                        settings.ENABLE_TF32, settings.ENABLE_CUDNN_BENCHMARK)
+                logger.info("Enabled cuDNN Benchmark autotuner.")
+        else:
+            logger.info("Running on CPU in FP32 precision.")
 
     @classmethod
     def get_instance(cls) -> "ModelManager":
@@ -88,7 +123,7 @@ class ModelManager:
         except Exception:
             processor = Sam3Processor.from_pretrained(model_id, local_files_only=settings.LOCAL_FILES_ONLY)
         
-        logger.info(f"Loading model weights for '{model_id}' with precision={settings.PRECISION} on device={self.device}...")
+        logger.info(f"Loading model weights for '{model_id}' with precision={self.precision} on device={self.device}...")
         start_time = time.time()
         
         model_cls = Sam3LiteTextModel if "litetext" in model_id.lower() else Sam3Model
@@ -170,6 +205,7 @@ class ModelManager:
         box_nms_threshold: Optional[float] = 0.50,
         filter_by_prompt_boxes: bool = True,
         model_override: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> SegmentResponse:
         """Run high-accuracy SAM3 inference with box refinement and NMS."""
         async with self.lock:
@@ -239,7 +275,7 @@ class ModelManager:
                 presence_score = round(float(presence_val), 4)
 
             # 4. Filter, Refine Bounding Boxes, and Format Detections
-            detections: List[DetectionResult] = []
+            raw_detections: List[Dict[str, Any]] = []
             if len(results) > 0 and len(results[0]["scores"]) > 0:
                 res = results[0]
                 scores_t = res["scores"].cpu()
@@ -311,68 +347,78 @@ class ModelManager:
                         "binary_mask": binary_mask,
                     })
 
-                # B. If input prompt boxes were provided, match detections to each prompt box
-                if unnorm_prompt_boxes and len(unnorm_prompt_boxes) > 0 and filter_by_prompt_boxes:
-                    matched_results: List[DetectionResult] = []
-                    used_indices = set()
-                    for p_idx, p_box in enumerate(unnorm_prompt_boxes):
-                        best_match = None
-                        best_iou = -1.0
-                        best_idx = -1
-                        for d_idx, d in enumerate(raw_detections):
-                            if d_idx in used_indices:
-                                continue
-                            iou = self.compute_box_iou(d["box"], p_box)
-                            if iou > best_iou:
-                                best_iou = iou
-                                best_match = d
-                                best_idx = d_idx
+            # B. If input prompt boxes were provided, match detections to each prompt box
+            candidate_detections: List[Dict[str, Any]] = []
+            if unnorm_prompt_boxes and len(unnorm_prompt_boxes) > 0 and filter_by_prompt_boxes:
+                used_indices = set()
+                for p_idx, p_box in enumerate(unnorm_prompt_boxes):
+                    best_match = None
+                    best_iou = -1.0
+                    best_idx = -1
+                    for d_idx, d in enumerate(raw_detections):
+                        if d_idx in used_indices:
+                            continue
+                        iou = self.compute_box_iou(d["box"], p_box)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_match = d
+                            best_idx = d_idx
 
-                        if best_match is not None and (best_iou > 0.15 or len(raw_detections) == 1):
-                            used_indices.add(best_idx)
-                            matched_results.append(DetectionResult(
-                                id=len(matched_results),
-                                score=best_match["score"],
-                                box=best_match["box"],
-                                tight_box=best_match["tight_box"],
-                                obb=best_match["obb"],
-                                area=best_match["area"],
-                                iou_with_prompt=round(best_iou, 4),
-                                matched_prompt_index=p_idx,
-                                mask_rle=best_match["mask_rle"],
-                                mask_polygons=best_match["mask_polygons"],
-                                mask_base64=best_match["mask_base64"],
-                                mask_binary=best_match["mask_binary"],
-                            ))
-                    detections = matched_results
-                else:
-                    # Return all high-confidence detections
-                    for idx, d in enumerate(raw_detections):
-                        detections.append(DetectionResult(
-                            id=idx,
-                            score=d["score"],
-                            box=d["box"],
-                            tight_box=d["tight_box"],
-                            obb=d["obb"],
-                            area=d["area"],
-                            mask_rle=d["mask_rle"],
-                            mask_polygons=d["mask_polygons"],
-                            mask_base64=d["mask_base64"],
-                            mask_binary=d["mask_binary"],
-                        ))
+                    if best_match is not None and (best_iou > 0.15 or len(raw_detections) == 1):
+                        used_indices.add(best_idx)
+                        candidate_detections.append(best_match)
+            else:
+                candidate_detections = raw_detections
+
+            # C. Find the detection with the highest confidence score
+            best_det: Optional[Dict[str, Any]] = None
+            if len(candidate_detections) > 0:
+                best_det = max(candidate_detections, key=lambda d: d["score"])
+
+            clean_prompt = prompt_text.strip() if prompt_text and prompt_text.strip() else None
+            label_name = clean_prompt if clean_prompt else "object"
+
+            mask_url: Optional[str] = None
+            if best_det is not None:
+                os.makedirs(settings.STATIC_MASK_DIR, exist_ok=True)
+                mask_filename = f"mask_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.png"
+                mask_filepath = os.path.join(settings.STATIC_MASK_DIR, mask_filename)
+
+                # Save highest confidence mask as static PNG (255 for object, 0 for background)
+                mask_uint8 = (best_det["binary_mask"] * 255).astype(np.uint8)
+                cv2.imwrite(mask_filepath, mask_uint8)
+
+                # Also save latest mask for convenience
+                latest_filepath = os.path.join(settings.STATIC_MASK_DIR, "latest_mask.png")
+                cv2.imwrite(latest_filepath, mask_uint8)
+
+                host_base = base_url or f"http://{settings.HOST if settings.HOST != '0.0.0.0' else 'localhost'}:{settings.PORT}"
+                mask_url = f"{host_base.rstrip('/')}/static/masks/{mask_filename}"
+
+                results_details = ResultDetails(
+                    status="success",
+                    message="Object detected successfully",
+                    bbox=best_det["box"],
+                    label=label_name,
+                    score=round(float(best_det["score"]), 4),
+                )
+            else:
+                results_details = ResultDetails(
+                    status="no_detections",
+                    message="No object detected above threshold",
+                    bbox=None,
+                    label=label_name,
+                    score=None,
+                )
 
             total_time_ms = (time.perf_counter() - total_start) * 1000
 
             return SegmentResponse(
-                success=True,
-                model_id=target_model_id,
-                precision=settings.PRECISION,
-                image_size=[orig_h, orig_w],
-                num_detections=len(detections),
-                presence_score=presence_score,
-                detections=detections,
-                inference_time_ms=round(infer_time_ms, 2),
-                total_time_ms=round(total_time_ms, 2),
+                object_name=label_name,
+                content_type="image/png",
+                latency_ms=round(total_time_ms, 2),
+                mask_url=mask_url,
+                results=results_details,
             )
 
     def get_gpu_stats(self) -> Dict[str, Any]:

@@ -1,7 +1,7 @@
 """Pydantic schemas for SAM3 request and response models."""
 
 from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 MaskFormatType = Literal["rle", "polygon", "base64_png", "binary_mask"]
@@ -81,18 +81,25 @@ class DetectionResult(BaseModel):
     mask_binary: Optional[List[List[int]]] = Field(None, description="2D nested array (0 or 1)")
 
 
+class ResultDetails(BaseModel):
+    status: str = Field(..., description="Detection status: 'success' or 'no_detections'")
+    message: str = Field(..., description="Detailed status message")
+    bbox: Optional[List[float]] = Field(None, description="Bounding box [x1, y1, x2, y2] of highest confidence mask")
+    label: Optional[str] = Field(None, description="Label/class of highest confidence object")
+    score: Optional[float] = Field(None, description="Confidence score of highest confidence detection")
+
+
 class SegmentResponse(BaseModel):
-    success: bool = True
-    model_id: str
-    precision: str
-    image_size: List[int] = Field(..., description="[Height, Width] of input image")
-    num_detections: int
-    presence_score: Optional[float] = Field(
-        None, description="Sigmoid presence head logit for the concept in the frame"
-    )
-    detections: List[DetectionResult]
-    inference_time_ms: float
-    total_time_ms: float
+    object_name: Optional[str] = Field(None, description="Name or concept of segmented object")
+    content_type: str = Field("image/png", description="Content type of the mask/response")
+    latency_ms: float = Field(..., description="Total processing latency in milliseconds")
+    mask_url: Optional[str] = Field(None, description="Downloadable URL for the highest confidence mask")
+    results: ResultDetails = Field(..., description="Detection result containing status, message, bbox, label, score")
+
+    @computed_field(alias="content type")
+    @property
+    def content_type_alias(self) -> str:
+        return self.content_type
 
 
 class HealthResponse(BaseModel):

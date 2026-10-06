@@ -62,49 +62,83 @@ def test_multipart_segmentation():
     resp = client.post(
         "/v1/segment",
         files={"file": ("test.jpg", img_bytes, "image/jpeg")},
-        data={"prompt_text": "red circle", "threshold": "0.05", "mask_format": "rle"},
+        data={"prompt_text": "red circle", "threshold": "0.05"},
     )
     total_elapsed_ms = (time.perf_counter() - t0) * 1000
 
     assert resp.status_code == 200, f"Multipart segmentation failed: {resp.text}"
     data = resp.json()
-    print(f"Multipart segmentation result: success={data['success']}, detections={data['num_detections']}, infer_time={data['inference_time_ms']}ms, client_elapsed={total_elapsed_ms:.2f}ms")
-    assert data["num_detections"] > 0, "Expected at least 1 detection for synthetic circle"
-    top_det = data["detections"][0]
-    assert "box" in top_det
-    assert "mask_rle" in top_det
-    print(f"Top detection: score={top_det['score']}, box={top_det['box']}, mask_rle_size={top_det['mask_rle']['size']}")
+    print(f"Multipart segmentation result: {data}")
+    print(f"Client elapsed: {total_elapsed_ms:.2f} ms")
+
+    # Verify top-level response fields
+    assert "object_name" in data
+    assert data["object_name"] == "red circle"
+    assert "content_type" in data
+    assert data["content_type"] == "image/png"
+    assert "content type" in data
+    assert data["content type"] == "image/png"
+    assert "latency_ms" in data
+    assert isinstance(data["latency_ms"], (int, float))
+    assert "mask_url" in data
+    assert data["mask_url"] is not None
+    assert "/static/masks/" in data["mask_url"]
+
+    # Verify results object
+    assert "results" in data
+    results = data["results"]
+    assert results["status"] == "success"
+    assert "message" in results
+    assert "bbox" in results
+    assert isinstance(results["bbox"], list) and len(results["bbox"]) == 4
+    assert results["label"] == "red circle"
+    assert "score" in results
+    assert isinstance(results["score"], float) and results["score"] > 0.0
+
+    # Verify that mask_url is static and downloadable
+    mask_resp = client.get(data["mask_url"])
+    assert mask_resp.status_code == 200, f"Failed to download mask from {data['mask_url']}"
+    assert "image/png" in mask_resp.headers.get("content-type", "")
+    assert len(mask_resp.content) > 0
+    print(f"[✓] Successfully downloaded mask ({len(mask_resp.content)} bytes) from static URL: {data['mask_url']}")
     print("Multipart test passed.")
 
 
-def test_json_segmentation_formats():
-    print("\n--- Testing POST /v1/segment/json with multiple mask formats ---")
+def test_json_segmentation():
+    print("\n--- Testing POST /v1/segment/json ---")
     img = create_synthetic_image()
     img_b64 = image_to_base64(img)
 
-    for fmt in ["rle", "polygon", "base64_png"]:
-        t0 = time.perf_counter()
-        payload = {
-            "image_base64": img_b64,
-            "prompt_text": "red circle",
-            "threshold": 0.05,
-            "mask_format": fmt,
-        }
-        resp = client.post("/v1/segment/json", json=payload)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        assert resp.status_code == 200, f"JSON segmentation failed for format={fmt}: {resp.text}"
-        data = resp.json()
-        print(f"Format '{fmt}': detections={data['num_detections']}, server_infer={data['inference_time_ms']}ms, total_client={elapsed_ms:.2f}ms")
+    t0 = time.perf_counter()
+    payload = {
+        "image_base64": img_b64,
+        "prompt_text": "red circle",
+        "threshold": 0.05,
+    }
+    resp = client.post("/v1/segment/json", json=payload)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    assert resp.status_code == 200, f"JSON segmentation failed: {resp.text}"
+    data = resp.json()
+    print(f"JSON response: {data}")
+    print(f"Client elapsed: {elapsed_ms:.2f} ms")
 
-        if data["num_detections"] > 0:
-            det = data["detections"][0]
-            if fmt == "rle":
-                assert det["mask_rle"] is not None
-            elif fmt == "polygon":
-                assert det["mask_polygons"] is not None
-            elif fmt == "base64_png":
-                assert det["mask_base64"] is not None
-    print("JSON formats test passed.")
+    assert data["object_name"] == "red circle"
+    assert data["content_type"] == "image/png"
+    assert data["content type"] == "image/png"
+    assert "latency_ms" in data
+    assert data["mask_url"] is not None
+
+    results = data["results"]
+    assert results["status"] == "success"
+    assert results["label"] == "red circle"
+    assert results["score"] > 0.5
+    assert len(results["bbox"]) == 4
+
+    # Verify mask download
+    mask_resp = client.get(data["mask_url"])
+    assert mask_resp.status_code == 200
+    assert "image/png" in mask_resp.headers.get("content-type", "")
+    print("JSON segmentation test passed.")
 
 
 def test_box_prompt():
@@ -116,13 +150,31 @@ def test_box_prompt():
         "image_base64": img_b64,
         "boxes": [[100.0, 100.0, 300.0, 300.0]],
         "threshold": 0.05,
-        "mask_format": "rle",
     }
     resp = client.post("/v1/segment/json", json=payload)
     assert resp.status_code == 200, f"Box prompt failed: {resp.text}"
     data = resp.json()
-    print(f"Box prompt: detections={data['num_detections']}, inference_time={data['inference_time_ms']}ms")
+    print(f"Box prompt response: {data}")
+    assert data["results"]["status"] == "success"
+    assert data["results"]["bbox"] is not None
+    assert data["mask_url"] is not None
     print("Box prompt test passed.")
+
+
+def test_root_segment_endpoint():
+    print("\n--- Testing Root POST /segment (Alias) ---")
+    img = create_synthetic_image()
+    img_bytes = image_to_bytes(img)
+    resp = client.post(
+        "/segment",
+        files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+        data={"prompt_text": "red circle", "threshold": "0.05"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["results"]["status"] == "success"
+    assert data["mask_url"] is not None
+    print("Root /segment alias test passed.")
 
 
 if __name__ == "__main__":
@@ -130,6 +182,7 @@ if __name__ == "__main__":
     test_health()
     test_info()
     test_multipart_segmentation()
-    test_json_segmentation_formats()
+    test_json_segmentation()
     test_box_prompt()
+    test_root_segment_endpoint()
     print("\n================ ALL TESTS PASSED SUCCESSFULLY! ================\n")

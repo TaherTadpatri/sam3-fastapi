@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     MODEL_ID: str = "facebook/sam3"
     
     # Precision / Quantization
-    # "fp16" provides ~2.5x speedup and 50% memory reduction on NVIDIA Tensor Cores (RTX 3050)
-    # with negligible loss in mAP accuracy.
-    PRECISION: Literal["fp16", "bf16", "fp32"] = "fp16"
+    # Options: "fp16", "bf16", "fp32", "auto".
+    # "auto" selects fp16 for CUDA GPUs (GTX/RTX) and fp32 for CPU.
+    PRECISION: Literal["fp16", "bf16", "fp32", "auto"] = "auto"
     
-    # Device
-    DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
+    # Device: "cuda", "cpu", or "auto" (auto-detects CUDA)
+    DEVICE: str = "auto"
     
     # Performance & CUDA settings
     ENABLE_TF32: bool = True
@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     LOG_LEVEL: str = "info"
+    
+    # Static files configuration
+    STATIC_DIR: str = "static"
+    STATIC_MASK_DIR: str = "static/masks"
     
     # Cache settings
     LOCAL_FILES_ONLY: bool = False

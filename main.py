@@ -1,11 +1,13 @@
 """Main entrypoint for the SAM3 High-Performance FastAPI Service."""
 
+import os
 import time
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.model_manager import ModelManager
@@ -88,7 +90,12 @@ async def root():
     return RedirectResponse(url="/docs")
 
 
-# Mount API routes
+# Mount static files directory
+os.makedirs(settings.STATIC_MASK_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=settings.STATIC_DIR), name="static")
+
+# Mount API routes both under /v1 and at root
+app.include_router(router, prefix="/v1")
 app.include_router(router)
 
 

@@ -136,9 +136,102 @@ curl -X POST "http://localhost:8000/v1/segment/json" \
   -d '{
     "image_base64": "<BASE64_STRING>",
     "boxes": [[100.0, 100.0, 300.0, 300.0]],
-    "threshold": 0.20,
-    "mask_format": "rle"
+    "threshold": 0.20
   }'
+```
+
+**Response Format:**
+```json
+{
+  "object_name": "red circle",
+  "content_type": "image/png",
+  "latency_ms": 1714.25,
+  "mask_url": "http://localhost:8000/static/masks/mask_1791317362015_168e662f.png",
+  "results": {
+    "status": "success",
+    "message": "Object detected successfully",
+    "bbox": [100.0, 100.0, 299.0, 299.0],
+    "label": "red circle",
+    "score": 0.9697
+  }
+}
+```
+
+The mask with the highest confidence score is automatically saved as a static file and can be directly downloaded via the provided `mask_url`.
+
+---
+
+## 🐳 Docker Deployment (Universal GTX, RTX, Data Center & CPU)
+
+The service is fully containerized with **hardware auto-detection** supporting:
+* **NVIDIA GTX Series**: Pascal (GTX 1060 / 1070 / 1080), Turing (GTX 1650 / 1660 / 1660 Ti)
+* **NVIDIA RTX Series**: Turing (RTX 2060 / 2070 / 2080), Ampere (RTX 3050 / 3060 / 3070 / 3080 / 3090), Ada Lovelace (RTX 4060 / 4070 / 4080 / 4090)
+* **Data Center / Cloud GPUs**: T4, V100, A10, A100, H100, L4
+* **Automatic CPU Fallback**: Automatically switches to CPU mode (`DEVICE=cpu`, `PRECISION=fp32`) if no NVIDIA GPU is detected.
+
+### 1. Run with Docker Compose (Recommended)
+
+**GPU Mode (Any GTX / RTX GPU):**
+```bash
+docker compose up -d
+```
+
+**View Logs:**
+```bash
+docker compose logs -f
+```
+
+**CPU Fallback Mode (For devices without an NVIDIA GPU):**
+```bash
+docker compose --profile cpu up sam3-cpu -d
+```
+
+**Stop Service:**
+```bash
+docker compose down
+```
+
+---
+
+### 2. Run with Docker CLI
+
+**Build Image:**
+```bash
+docker build -t sam3-service:latest .
+```
+
+**Run on GPU (Any GTX / RTX):**
+```bash
+docker run -d \
+  --name sam3-server \
+  --gpus all \
+  -p 8000:8000 \
+  -v $(pwd)/static:/app/static \
+  -v sam3-hf-cache:/root/.cache/huggingface \
+  sam3-service:latest
+```
+
+**Run with Distilled Model (LiteText / 1.09 GB VRAM):**
+```bash
+docker run -d \
+  --name sam3-server \
+  --gpus all \
+  -p 8000:8000 \
+  -e MODEL_ID="vil-uob/sam3-litetext-s0" \
+  -v $(pwd)/static:/app/static \
+  -v sam3-hf-cache:/root/.cache/huggingface \
+  sam3-service:latest
+```
+
+**Run in CPU-only Mode:**
+```bash
+docker run -d \
+  --name sam3-server-cpu \
+  -p 8000:8000 \
+  -e DEVICE="cpu" \
+  -e PRECISION="fp32" \
+  -v $(pwd)/static:/app/static \
+  sam3-service:latest
 ```
 
 ---

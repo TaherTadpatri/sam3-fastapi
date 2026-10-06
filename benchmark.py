@@ -60,9 +60,9 @@ def run_benchmarks(num_runs=5):
         resp = client.post("/v1/segment/json", json=concept_payload)
         client_elapsed = (time.perf_counter() - t0) * 1000
         data = resp.json()
-        infer_time = data["inference_time_ms"]
+        infer_time = data["latency_ms"]
         concept_times.append(infer_time)
-        print(f"  Run #{i+1}: Server Infer = {infer_time:.2f} ms | Client E2E = {client_elapsed:.2f} ms | Detections = {data['num_detections']}")
+        print(f"  Run #{i+1}: Server Infer = {infer_time:.2f} ms | Client E2E = {client_elapsed:.2f} ms | Status = {data['results']['status']}")
 
     print(f"  -> Concept Mean Infer Latency: {np.mean(concept_times):.2f} ms (Min: {np.min(concept_times):.2f} ms)")
 
@@ -80,9 +80,9 @@ def run_benchmarks(num_runs=5):
         resp = client.post("/v1/segment/json", json=box_payload)
         client_elapsed = (time.perf_counter() - t0) * 1000
         data = resp.json()
-        infer_time = data["inference_time_ms"]
+        infer_time = data["latency_ms"]
         box_times.append(infer_time)
-        print(f"  Run #{i+1}: Server Infer = {infer_time:.2f} ms | Client E2E = {client_elapsed:.2f} ms | Detections = {data['num_detections']}")
+        print(f"  Run #{i+1}: Server Infer = {infer_time:.2f} ms | Client E2E = {client_elapsed:.2f} ms | Status = {data['results']['status']}")
 
     print(f"  -> Box Mean Infer Latency:     {np.mean(box_times):.2f} ms (Min: {np.min(box_times):.2f} ms)")
 

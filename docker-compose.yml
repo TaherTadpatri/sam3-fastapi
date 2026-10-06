@@ -1,0 +1,72 @@
+version: "3.8"
+
+services:
+  # ----------------------------------------------------------------------------
+  # SAM 3 Service with GPU Acceleration (Supports GTX 10/16, RTX 20/30/40, etc.)
+  # ----------------------------------------------------------------------------
+  sam3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sam3-service:latest
+    container_name: sam3-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_ID=${MODEL_ID:-facebook/sam3}
+      - PRECISION=${PRECISION:-auto}
+      - DEVICE=${DEVICE:-auto}
+      - ENABLE_WARMUP=${ENABLE_WARMUP:-true}
+      - ENABLE_TF32=${ENABLE_TF32:-true}
+      - ENABLE_CUDNN_BENCHMARK=${ENABLE_CUDNN_BENCHMARK:-true}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      # Persist static output masks on host
+      - ./static:/app/static
+      # Cache Hugging Face model weights to avoid re-downloading on container restarts
+      - sam3-hf-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ----------------------------------------------------------------------------
+  # SAM 3 Service CPU Fallback (For devices without NVIDIA GPUs or Mac/VPS)
+  # Run via: docker compose --profile cpu up sam3-cpu
+  # ----------------------------------------------------------------------------
+  sam3-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sam3-service:latest
+    container_name: sam3-server-cpu
+    profiles: ["cpu"]
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_ID=${MODEL_ID:-facebook/sam3}
+      - PRECISION=fp32
+      - DEVICE=cpu
+      - ENABLE_WARMUP=false
+      - HOST=0.0.0.0
+      - PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - ./static:/app/static
+      - sam3-hf-cache:/root/.cache/huggingface
+
+volumes:
+  sam3-hf-cache:
+    name: sam3_hf_cache
